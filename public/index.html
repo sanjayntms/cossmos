@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cosmos DB Regional Fallback Demo</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f2f2f2;
+      padding: 20px;
+    }
+    h1 {
+      color: #333;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      background: white;
+    }
+    th, td {
+      padding: 12px;
+      border: 1px solid #ccc;
+      text-align: center;
+    }
+    th {
+      background-color: #eee;
+    }
+    .success {
+      color: green;
+      font-weight: bold;
+    }
+    .fail {
+      color: red;
+      font-weight: bold;
+    }
+    .fallback {
+      background: #fff3cd;
+      padding: 10px;
+      border: 1px solid #ffeeba;
+      margin-top: 15px;
+      color: #856404;
+    }
+    #reload-btn {
+      margin-top: 10px;
+      padding: 8px 16px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #diagnostics {
+      margin-top: 20px;
+      background: #fff;
+      border: 1px solid #ccc;
+      padding: 10px;
+      font-size: 13px;
+      overflow-x: auto;
+    }
+    #movie-form {
+      margin-bottom: 20px;
+      background: #fff;
+      border: 1px solid #ccc;
+      padding: 15px;
+    }
+    #movie-form input {
+      margin-right: 10px;
+      padding: 6px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🌐 Cosmos DB Regional Fallback Visualization</h1>
+  <p>This table shows the status, latency, and region actually served for each preferred region.</p>
+
+  <form id="movie-form">
+    <input type="text" id="title" placeholder="Movie Title" required />
+    <input type="text" id="genre" placeholder="Genre" required />
+    <input type="number" id="year" placeholder="Year" required />
+    <input type="number" id="rating" placeholder="Rating (1-10)" min="1" max="10" required />
+    <input type="number" id="rottenTomato" placeholder="Rotten Tomato %" min="0" max="100" required />
+    <button type="submit">➕ Add Movie</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Preferred Region</th>
+        <th>Status</th>
+        <th>Latency</th>
+        <th>Actual Region Served</th>
+        <th>Error Message</th>
+      </tr>
+    </thead>
+    <tbody id="region-status">
+      <tr><td colspan="5">Loading...</td></tr>
+    </tbody>
+  </table>
+
+  <div id="fallback-message"></div>
+
+  <button id="reload-btn" onclick="fetchLatencyReport()">🔁 Test Again</button>
+
+  <pre id="diagnostics"></pre>
+
+  <script>
+    async function fetchLatencyReport() {
+      const tbody = document.getElementById("region-status");
+      const fallbackDiv = document.getElementById("fallback-message");
+      const diagnosticsDiv = document.getElementById("diagnostics");
+
+      tbody.innerHTML = "<tr><td colspan='5'>Loading...</td></tr>";
+      fallbackDiv.innerHTML = "";
+      diagnosticsDiv.innerHTML = "";
+
+      try {
+        const res = await fetch("/latency-report");
+        const report = await res.json();
+
+        tbody.innerHTML = "";
+
+        let fallbackDetected = false;
+
+        ["centralIndia", "westUS3"].forEach(regionKey => {
+          const regionLabel = regionKey === "centralIndia" ? "🇮🇳 Central India" : "🇺🇸 West US 3";
+          const region = report[regionKey];
+          const diagnostics = report.diagnostics?.[regionKey] || {};
+
+          let success = region?.success;
+          let latency = region?.latency ?? "N/A";
+          const actualRegion = diagnostics.regionServed || "Unknown";
+          const error = region?.error || "";
+
+          if (regionKey === "centralIndia" && actualRegion !== "Central India") {
+            success = false;
+            latency = "";
+            fallbackDetected = true;
+          }
+
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${regionLabel}</td>
+            <td class="${success ? 'success' : 'fail'}">
+              ${success ? "✅ Success" : "❌ Failed"}
+            </td>
+            <td>${latency ? latency + " ms" : ""}</td>
+            <td>${actualRegion}</td>
+            <td>${error}</td>
+          `;
+          tbody.appendChild(row);
+        });
+
+        if (fallbackDetected && report.westUS3?.success) {
+          fallbackDiv.innerHTML = `<div class="fallback">⚠️ <strong>Fallback triggered:</strong> Central India is down, routing to West US 3.</div>`;
+        }
+
+        diagnosticsDiv.textContent = JSON.stringify(report.diagnostics, null, 2);
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="5" class="fail">Error fetching report: ${err.message}</td></tr>`;
+      }
+    }
+
+    document.getElementById("movie-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      const title = document.getElementById("title").value.trim();
+      const genre = document.getElementById("genre").value.trim();
+      const year = document.getElementById("year").value.trim();
+      const rating = document.getElementById("rating").value.trim();
+      const rottenTomato = document.getElementById("rottenTomato").value.trim();
+
+      if (!title || !genre || !year || !rating || !rottenTomato) {
+        alert("Please fill in all fields.");
+        return;
+      }
+
+      const movieData = {
+        title,
+        genres: genre,
+        year,
+        Rating: rating,
+        "Rotton Tomato": rottenTomato
+      };
+
+      try {
+        const res = await fetch("/movies", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(movieData)
+        });
+
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.message || "Failed to add movie");
+        }
+
+        const data = await res.json();
+        alert("✅ Movie added successfully: " + JSON.stringify(data));
+        document.getElementById("movie-form").reset();
+        fetchLatencyReport();
+      } catch (err) {
+        alert("❌ Failed to add movie: " + err.message);
+      }
+    });
+
+    fetchLatencyReport();
+  </script>
+</body>
+</html>
